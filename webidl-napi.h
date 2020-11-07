@@ -57,6 +57,12 @@
 #define NAPI_CALL_RETURN_VOID(env, the_call)                             \
   NAPI_CALL_BASE(env, the_call, NAPI_RETVAL_NOTHING)
 
+#define STATUS_CALL(the_call)             \
+  do {                                    \
+    napi_status status = the_call;        \
+    if (status != napi_ok) return status; \
+  } while(0);
+
 struct webidl_sig {
   bool candidate;
   std::vector<napi_valuetype> sig;

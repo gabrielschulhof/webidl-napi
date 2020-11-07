@@ -19,28 +19,19 @@ ArrayToJS(napi_env env, const ArrayType& ar, napi_value* result) {
   // template param.
   (void) freeze;
 
-  status = napi_open_escapable_handle_scope(env, &scope);
-  if (status != napi_ok) return status;
-
-  status = napi_create_array(env, &res);
-  if (status != napi_ok) goto fail;
+  STATUS_CALL(napi_open_escapable_handle_scope(env, &scope));
+  STATUS_CALL(napi_create_array(env, &res));
 
   for (int idx = 0; idx < ar.size(); idx++) {
     napi_value member;
-
     T item = ar.at(idx);
-    status = Converter<T>::ToJS(env, item, &member);
-    if (status != napi_ok) goto fail;
 
-    status = napi_set_element(env, res, idx, member);
-    if (status != napi_ok) goto fail;
+    STATUS_CALL(Converter<T>::ToJS(env, item, &member));
+    STATUS_CALL(napi_set_element(env, res, idx, member));
   }
 
-  status = napi_escape_handle(env, scope, res, &res);
-  if (status != napi_ok) goto fail;
-
-  status = napi_close_escapable_handle_scope(env, scope);
-  if (status != napi_ok) goto fail;
+  STATUS_CALL(napi_escape_handle(env, scope, res, &res));
+  STATUS_CALL(napi_close_escapable_handle_scope(env, scope));
 
   *result = res;
   return napi_ok;
@@ -57,26 +48,19 @@ ArrayToNative(napi_env env, napi_value ar, ArrayType* result) {
   ArrayType res{};
   uint32_t size;
 
-  status = napi_open_handle_scope(env, &scope);
-  if (status != napi_ok) return status;
-
-  status = napi_get_array_length(env, ar, &size);
-  if (status != napi_ok) return status;
+  STATUS_CALL(napi_open_handle_scope(env, &scope));
+  STATUS_CALL(napi_get_array_length(env, ar, &size));
 
   res.resize(size);
 
   for (int idx = 0; idx < size; idx++) {
     napi_value member;
 
-    status = napi_get_element(env, ar, idx, &member);
-    if (status != napi_ok) goto fail;
-
-    status = Converter<T>::ToNative(env, member, &(res.at(idx)));
-    if (status != napi_ok) goto fail;
+    STATUS_CALL(napi_get_element(env, ar, idx, &member));
+    STATUS_CALL(Converter<T>::ToNative(env, member, &(res.at(idx))));
   }
 
-  status = napi_close_handle_scope(env, scope);
-  if (status != napi_ok) goto fail;
+  STATUS_CALL(napi_close_handle_scope(env, scope));
 
   *result = res;
   return napi_ok;
@@ -159,14 +143,13 @@ Converter<DOMString>::ToNative(napi_env env,
                                DOMString* result) {
   size_t size;
 
-  napi_status status = napi_get_value_string_utf8(env, str, nullptr, 0, &size);
-  if (status != napi_ok) return status;
+  STATUS_CALL(napi_get_value_string_utf8(env, str, nullptr, 0, &size));
 
   result->resize(size + 1);
-  status = napi_get_value_string_utf8(env, str,
-                                      const_cast<char*>(result->c_str()),
-                                      size + 1, &size);
-  if (status != napi_ok) return status;
+
+  STATUS_CALL(napi_get_value_string_utf8(env, str,
+                                         const_cast<char*>(result->c_str()),
+                                         size + 1, &size));
 
   return napi_ok;
 }
@@ -221,21 +204,19 @@ inline napi_status IsConstructCall(napi_env env,
                                    bool* result) {
   napi_value new_target;
   bool res = true;
-  napi_status status = napi_get_new_target(env, info, &new_target);
-  if (status != napi_ok) return status;
+  STATUS_CALL(napi_get_new_target(env, info, &new_target));
 
   if (new_target == nullptr) {
-    status = napi_throw_error(env,
-                              nullptr,
-                              (std::string("Non-construct calls to the `") +
-                                  ifname + "` constructor are not supported.")
-                                  .c_str());
-    if (status != napi_ok) return status;
+    STATUS_CALL(napi_throw_error(env,
+                                nullptr,
+                                (std::string("Non-construct calls to the `") +
+                                    ifname + "` constructor are not supported.")
+                                    .c_str()));
     res = false;
   }
 
   *result = res;
-  return status;
+  return napi_ok;
 }
 
 inline napi_status PickSignature(napi_env env,
@@ -248,8 +229,7 @@ inline napi_status PickSignature(napi_env env,
   // argument types found in the actual arguments.
   for (size_t idx = 0; idx < argc; idx++) {
     napi_valuetype val_type;
-    napi_status status = napi_typeof(env, argv[idx], &val_type);
-    if (status != napi_ok) return status;
+    STATUS_CALL(napi_typeof(env, argv[idx], &val_type));
     for (auto& sig: sigs)
       if (sig.candidate)
         if (idx >= sig.sig.size() || sig.sig[idx] != val_type)
@@ -297,34 +277,25 @@ napi_status Promise<T>::Conclude(napi_env candidate_env) {
   if (env == nullptr) return napi_ok;
 
   if (deferred == nullptr) {
-    status = napi_create_promise(env, &deferred, &promise);
-    if (status != napi_ok) return status;
+    STATUS_CALL(napi_create_promise(env, &deferred, &promise));
   }
 
   if (state == kResolved) {
     napi_value js_resolution;
 
-    status = Converter<T>::ToJS(env,
-                                const_cast<const T&>(resolution),
-                                &js_resolution);
-    if (status != napi_ok) return status;
-
-    status = napi_resolve_deferred(env, deferred, js_resolution);
-    if (status != napi_ok) return status;
+    STATUS_CALL(Converter<T>::ToJS(env,
+                                   const_cast<const T&>(resolution),
+                                   &js_resolution));
+    STATUS_CALL(napi_resolve_deferred(env, deferred, js_resolution));
   } else if (state == kRejected) {
     napi_value error, message;
 
-    status = napi_create_string_utf8(env,
-                                     "Promise rejected",
-                                     NAPI_AUTO_LENGTH,
-                                     &message);
-    if (status != napi_ok) return status;
-
-    status = napi_create_error(env, nullptr, message, &error);
-    if (status != napi_ok) return status;
-
-    status = napi_reject_deferred(env, deferred, error);
-    if (status != napi_ok) return status;
+    STATUS_CALL(napi_create_string_utf8(env,
+                                        "Promise rejected",
+                                        NAPI_AUTO_LENGTH,
+                                        &message));
+    STATUS_CALL(napi_create_error(env, nullptr, message, &error));
+    STATUS_CALL(napi_reject_deferred(env, deferred, error));
   }
 
   return napi_ok;
@@ -428,14 +399,14 @@ inline napi_status
 InstanceData::GetCurrent(napi_env env, InstanceData** result) {
   void* data = nullptr;
 
-  napi_status status = napi_get_instance_data(env, &data);
-  if (status != napi_ok) return status;
+  STATUS_CALL(napi_get_instance_data(env, &data));
 
   if (data == nullptr) {
     InstanceData* new_data = new InstanceData;
 
     data = static_cast<void*>(new_data);
-    status = napi_set_instance_data(env, data, DestroyInstanceData, nullptr);
+    napi_status status =
+        napi_set_instance_data(env, data, DestroyInstanceData, nullptr);
     if (status != napi_ok) {
       delete new_data;
       return status;
@@ -503,8 +474,7 @@ napi_status Wrapping<T>::Retrieve(napi_env env,
                                   Wrapping<T>** get_wrapping) {
   void* data = nullptr;
 
-  napi_status status = napi_unwrap(env, js_rcv, &data);
-  if (status != napi_ok) return status;
+  STATUS_CALL(napi_unwrap(env, js_rcv, &data));
 
   Wrapping<T>*wrapping = static_cast<Wrapping<T>*>(data);
 
@@ -513,8 +483,9 @@ napi_status Wrapping<T>::Retrieve(napi_env env,
       wrapping->refs[ref_idx] != nullptr) {
     napi_value ref_value = nullptr;
 
-    status = napi_get_reference_value(env, wrapping->refs[ref_idx], &ref_value);
-    if (status != napi_ok) return status;
+    STATUS_CALL(napi_get_reference_value(env,
+                                         wrapping->refs[ref_idx],
+                                         &ref_value));
 
     if (ref != nullptr) *ref = ref_value;
   }
@@ -529,8 +500,7 @@ inline napi_status
 Wrapping<T>::SetRef(napi_env env, int idx, napi_value same_obj) {
   napi_ref ref;
 
-  napi_status status = napi_create_reference(env, same_obj, 1, &ref);
-  if (status != napi_ok) return status;
+  STATUS_CALL(napi_create_reference(env, same_obj, 1, &ref));
 
   refs[idx] = ref;
   return napi_ok;
