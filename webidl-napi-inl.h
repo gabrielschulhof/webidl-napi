@@ -417,8 +417,12 @@ InstanceData::GetCurrent(napi_env env, InstanceData** result) {
   return napi_ok;
 }
 
-inline void InstanceData::AddConstructor(const char* name, napi_ref ctor) {
-  ctors[name] = ctor;
+inline napi_status
+InstanceData::AddConstructor(napi_env env, const char* name, napi_value ctor) {
+  napi_ref ctor_ref;
+  STATUS_CALL(napi_create_reference(env, ctor, 1, &ctor_ref));
+  ctors[name] = ctor_ref;
+  return napi_ok;
 }
 
 inline void
@@ -540,10 +544,10 @@ napi_property_descriptor Wrapping<T>::InstanceAccessor(const char* utf8name) {
 template <typename T>
 template <typename FieldType, FieldType T::*FieldName, int sameIdx>
 napi_value Wrapping<T>::InstanceGetter(napi_env env, napi_callback_info info) {
-  napi_value js_rcv;
+  napi_value js_rcv = nullptr;
   napi_value result = nullptr;
-  Wrapping<T>* wrapping;
-  T* cc_rcv;
+  Wrapping<T>* wrapping = nullptr;
+  T* cc_rcv = nullptr;
 
   NAPI_CALL(env,
             napi_get_cb_info(env, info, nullptr, nullptr, &js_rcv, nullptr));
@@ -581,6 +585,171 @@ napi_value Wrapping<T>::InstanceSetter(napi_env env, napi_callback_info info) {
             Converter<FieldType>::ToNative(env, js_new, &(cc_rcv->*FieldName)));
 
   return nullptr;
+}
+
+inline napi_status
+GetExposureGlobals(napi_env env,
+                   std::vector<const char*> globals,
+                   std::vector<napi_value>* result) {
+  napi_value global;
+  STATUS_CALL(napi_get_global(env, &global));
+
+  for (const char* global_prop: globals) {
+    napi_value dest, dest_proto;
+
+    STATUS_CALL(napi_get_named_property(env, global, global_prop, &dest));
+    STATUS_CALL(napi_get_named_property(env, dest, "prototype", &dest_proto));
+    result->push_back(dest_proto);
+  }
+
+  return napi_ok;
+}
+
+inline napi_status
+ExposeInterface(napi_env env,
+                size_t prop_count,
+                const napi_property_descriptor* props,
+                std::vector<const char*> globals) {
+  std::vector<napi_value> dests;
+  STATUS_CALL(GetExposureGlobals(env, globals, &dests));
+  for (napi_value dest: dests) {
+    STATUS_CALL(napi_define_properties(env, dest, prop_count, props));
+  }
+
+  return napi_ok;
+}
+
+template <typename T>
+template <napi_property_attributes attributes, bool readonly>
+inline napi_status
+ExposedPartialProperty<T>::Define(napi_env env,
+                                  std::vector<const char*> globals,
+                                  const char* utf8name) {
+  napi_property_descriptor desc = napi_property_descriptor();
+
+  desc.utf8name = utf8name;
+  desc.attributes = attributes;
+  desc.getter = &ExposedPartialProperty<T>::Getter;
+  if (!readonly)
+    desc.setter = &ExposedPartialProperty<T>::Setter;
+
+  std::vector<napi_value> dests;
+  STATUS_CALL(GetExposureGlobals(env, globals, &dests));
+
+  for (napi_value dest: dests) {
+    ExposedPartialProperty<T>* data = new ExposedPartialProperty<T>;
+    desc.data = data;
+    STATUS_CALL(napi_add_finalizer(env,
+                                   dest,
+                                   data,
+                                   &ExposedPartialProperty<T>::Destroy,
+                                   nullptr,
+                                   nullptr));
+    STATUS_CALL(napi_define_properties(env, dest, 1, &desc));
+  }
+}
+
+template <typename T>
+napi_value
+ExposedPartialProperty<T>::Getter(napi_env env, napi_callback_info info) {
+  void* raw_data;
+  NAPI_CALL(env,
+            napi_get_cb_info(env, info, nullptr, nullptr, nullptr, &raw_data));
+  ExposedPartialProperty<T>* data =
+      static_cast<ExposedPartialProperty<T>*>(data);
+
+  napi_value result;
+
+  NAPI_CALL(env, Converter<T>::ToJS(env, *data, &result));
+
+  return result;
+}
+
+template <typename T>
+napi_value
+ExposedPartialProperty<T>::Setter(napi_env env, napi_callback_info info) {
+  void* raw_data;
+  size_t argc = 1;
+  napi_value new_value;
+  NAPI_CALL(env,
+            napi_get_cb_info(env, info, &argc, &new_value, nullptr, &raw_data));
+  ExposedPartialProperty<T>* data =
+      static_cast<ExposedPartialProperty<T>*>(data);
+
+  NAPI_CALL(env, Converter<T>::ToNative(env, new_value, &(data->value)));
+
+  return nullptr;
+}
+
+template <typename T>
+void
+ExposedPartialProperty<T>::Destroy(napi_env env, void* data, void* hint) {
+  (void) env;
+  (void) hint;
+  delete static_cast<ExposedPartialProperty<T>*>(data);
+}
+
+template <typename T>
+template <napi_property_attributes attributes>
+inline napi_status
+ExposedPartialSameObjProperty<T>::Define(napi_env env,
+                                         std::vector<const char*> globals,
+                                         const char* utf8name) {
+  napi_property_descriptor desc = napi_property_descriptor();
+
+  desc.utf8name = utf8name;
+  desc.attributes = attributes;
+  desc.getter = &ExposedPartialSameObjProperty<T>::Getter;
+
+  std::vector<napi_value> dests;
+  STATUS_CALL(GetExposureGlobals(env, globals, &dests));
+
+  for (napi_value dest: dests) {
+    ExposedPartialSameObjProperty<T>* data =
+        new ExposedPartialSameObjProperty<T>;
+    desc.data = data;
+    STATUS_CALL(napi_add_finalizer(env,
+                                   dest,
+                                   data,
+                                   &ExposedPartialSameObjProperty<T>::Destroy,
+                                   nullptr,
+                                   nullptr));
+    STATUS_CALL(napi_define_properties(env, dest, 1, &desc));
+  }
+
+  return napi_ok;
+}
+
+template <typename T>
+napi_value ExposedPartialSameObjProperty<T>::Getter(napi_env env,
+                                                    napi_callback_info info) {
+  void* raw_data;
+  NAPI_CALL(env,
+            napi_get_cb_info(env, info, nullptr, nullptr, nullptr, &raw_data));
+  ExposedPartialSameObjProperty<T>* data =
+      static_cast<ExposedPartialSameObjProperty<T>*>(raw_data);
+
+  napi_value result;
+  if (data->value == nullptr) {
+    T item;
+    NAPI_CALL(env, Converter<T>::ToJS(env, item, &result));
+    NAPI_CALL(env, napi_create_reference(env, result, 1, &(data->value)));
+  } else {
+    NAPI_CALL(env, napi_get_reference_value(env, data->value, &result));
+  }
+
+  return result;
+}
+
+template <typename T>
+void ExposedPartialSameObjProperty<T>::Destroy(napi_env env,
+                                               void* raw_data,
+                                               void* hint) {
+  ExposedPartialSameObjProperty<T>* data =
+      static_cast<ExposedPartialSameObjProperty<T>*>(raw_data);
+  if (data->value != nullptr)
+    NAPI_CALL_RETURN_VOID(env, napi_delete_reference(env, data->value));
+  delete data;
 }
 
 }  // end of namespace WebIdlNapi

@@ -169,7 +169,7 @@ class Converter<FrozenArray<T>> {
 class InstanceData {
  public:
   static napi_status GetCurrent(napi_env env, InstanceData** result);
-  void AddConstructor(const char* name, napi_ref ctor);
+  napi_status AddConstructor(napi_env env, const char* name, napi_value ctor);
   napi_ref GetConstructor(const char* name);
   void SetData(void* data, napi_finalize fin_cb, void* hint);
   void* GetData();
@@ -213,6 +213,43 @@ class Wrapping {
 
   template <typename FieldType, FieldType T::*FieldName>
   static napi_value InstanceSetter(napi_env env, napi_callback_info info);
+};
+
+napi_status
+GetExposureGlobals(napi_env env,
+                   std::vector<const char*>globals,
+                   std::vector<napi_value>* result);
+napi_status
+ExposeInterface(napi_env env,
+                size_t prop_count,
+                const napi_property_descriptor* prop,
+                std::vector<const char*>globals);
+
+template <typename T>
+class ExposedPartialProperty {
+ public:
+  template <napi_property_attributes attributes, bool readonly>
+  static napi_status Define(napi_env env,
+                            std::vector<const char*> globals,
+                            const char* utf8name);
+ private:
+  T value;
+  static napi_value Getter(napi_env env, napi_callback_info info);
+  static napi_value Setter(napi_env env, napi_callback_info info);
+  static void Destroy(napi_env env, void* data, void* hint);
+};
+
+template <typename T>
+class ExposedPartialSameObjProperty {
+ public:
+  template <napi_property_attributes attributes>
+  static napi_status Define(napi_env env,
+                            std::vector<const char*> globals,
+                            const char* utf8name);
+ private:
+  napi_ref value = nullptr;
+  static napi_value Getter(napi_env env, napi_callback_info info);
+  static void Destroy(napi_env env, void* data, void* hint);
 };
 
 }  // end of namespace WebIdlNapi

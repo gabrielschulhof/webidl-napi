@@ -1,0 +1,10 @@
+[Exposed=Window]
+interface Something {
+  attribute DOMString name;
+};
+
+[Exposed=Window]
+partial interface Navigator {
+  [SameObject] readonly attribute Something something;
+};
+

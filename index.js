@@ -11,6 +11,7 @@ const argv = yargs
   .nargs('i', 1)
   .nargs('o', 1)
   .describe('o', 'output file')
+  .describe('x', 'ignore `Exposed` to avoid global namespace pollution')
   .argv;
 
 if (argv._.length === 0) {
@@ -54,6 +55,11 @@ const typemapWebIDLBasicTypesToNAPI = {
   // object
   'object': { type: 'napi_object', converter: 'object' }
 };
+
+function isExposedPartial(iface) {
+  return (iface.partial &&
+    iface.extAttrs.filter(({name}) => (name === 'Exposed')).length > 0);
+}
 
 function generateForwardDeclaration(decl) {
   return [
@@ -524,9 +530,20 @@ function generateIfaceOperation(ifname, opname, sigs, sameObjAttrCount) {
   ].join('\n');
 }
 
-function generateIfaceInit(ifname, ops, attrs, sameObjAttrs) {
+function generateIfaceInit(iface, ops, attrs, sameObjAttrs, pollute) {
+  const exposedPartial = (pollute && isExposedPartial(iface));
+
+  // We don't count attributes if this is an exposed partial because we define
+  // them individually rather than via a list of property descriptors.
   const propCount =
-    Object.keys(ops).length + attrs.length + sameObjAttrs.length;
+    Object.keys(ops).length +
+      (exposedPartial ? 0 : (attrs.length + sameObjAttrs.length));
+
+  const ifname = iface.name;
+  let exposed = {};
+  if (exposedPartial && propCount > 0) {
+    exposed = iface.extAttrs.filter(({name}) => (name === 'Exposed'))[0].rhs;
+  }
 
   return [
     // Generate the init method that defines the JS class.
@@ -536,7 +553,6 @@ function generateIfaceInit(ifname, ops, attrs, sameObjAttrs) {
     `    napi_value* result) {`,
     `  napi_status status;`,
     `  napi_value ctor;`,
-    `  napi_ref ctor_ref;`,
     `  WebIdlNapi::InstanceData* idata;`,
     ...((propCount > 0) ? [
       `  napi_property_descriptor props[] =`,
@@ -557,46 +573,76 @@ function generateIfaceInit(ifname, ops, attrs, sameObjAttrs) {
             ].join(' | ') + ')',
             `nullptr`
           ])),
-        ...attrs.map((attribute) => ([
-          `WebIdlNapi::Wrapping<${ifname}>::InstanceAccessor<`,
-          `          ${generateNativeType(attribute.idlType)},`,
-          `          &${ifname}::${attribute.name},`,
-          `          napi_property_attributes::napi_enumerable,`,
-          `          -1,`,
-          `          ${attribute.readonly}>("${attribute.name}")`
-        ].join('\n'))),
-        ...sameObjAttrs.map((attribute, index) => ([
-          `WebIdlNapi::Wrapping<${ifname}>::InstanceAccessor<`,
-          `          ${generateNativeType(attribute.idlType)},`,
-          `          &${ifname}::${attribute.name},`,
-          `          napi_property_attributes::napi_enumerable,`,
-          `          ${index},`,
-          `          ${attribute.readonly}>("${attribute.name}")`
-        ].join('\n')))
+        // Define accessors differently if this is an exposed partial interface.
+        ...(!exposedPartial ? [
+          ...attrs.map((attribute) => ([
+            `WebIdlNapi::Wrapping<${ifname}>::InstanceAccessor<`,
+            `          ${generateNativeType(attribute.idlType)},`,
+            `          &${ifname}::${attribute.name},`,
+            `          napi_property_attributes::napi_enumerable,`,
+            `          -1,`,
+            `          ${attribute.readonly}>("${attribute.name}")`
+          ].join('\n'))),
+          ...sameObjAttrs.map((attribute, index) => ([
+            `WebIdlNapi::Wrapping<${ifname}>::InstanceAccessor<`,
+            `          ${generateNativeType(attribute.idlType)},`,
+            `          &${ifname}::${attribute.name},`,
+            `          napi_property_attributes::napi_enumerable,`,
+            `          ${index},`,
+            `          ${attribute.readonly}>("${attribute.name}")`
+          ].join('\n')))
+        ] : [])
       ], '    ') + ';',
       ] : []),
-    ``,
-    `  STATUS_CALL(WebIdlNapi::InstanceData::GetCurrent(env, &idata));`,
-    ``,
-    `  STATUS_CALL(napi_define_class(`,
-    `      env,`,
-    `      "${ifname}",`,
-    `      NAPI_AUTO_LENGTH,`,
-    `      webidl_napi_interface_${ifname}_constructor,`,
-    `      nullptr,`,
-    ...((propCount > 0) ? [
-      `      sizeof(props) / sizeof(*props),`,
-      `      props,`,
+    ...(exposedPartial ? [
+      // Expose operations.
+      ...(propCount > 0 ? [
+        `  STATUS_CALL(WebIdlNapi::ExposeInterface(`,
+        `      env,`,
+        `      sizeof(props) / sizeof(*props),`,
+        `      props,`,
+        `${generateExposureList(exposed, '      ', [ `"${ifname}"` ])}));`,
+      ] : []),
+      // Expose attributes.
+      ...attrs.map((attribute) => [
+        `  STATUS_CALL(WebIdlNapi::ExposedPartialProperty<`,
+        `      ${generateNativeType(attribute.idlType)}>::Define<`,
+        `      napi_property_attributes::napi_enumerable,`,
+        `      ${attribute.readonly}>(`,
+        `          env,`,
+        `${generateExposureList(exposed, '          ', [`"${ifname}"`])},`,
+        `          "${attribute.name}"));`
+      ]).flat(),
+      ...sameObjAttrs.map((attribute) => ([
+        `  STATUS_CALL(WebIdlNapi::ExposedPartialSameObjProperty<`,
+        `      ${generateNativeType(attribute.idlType)}>::Define<`,
+        `      napi_property_attributes::napi_enumerable>(`,
+        `          env,`,
+        `${generateExposureList(exposed, '          ', [`"${ifname}"`])},`,
+        `          "${attribute.name}"));`
+      ])).flat(),
     ] : [
-      `      0,`,
+      ``,
+      `  STATUS_CALL(napi_define_class(`,
+      `      env,`,
+      `      "${ifname}",`,
+      `      NAPI_AUTO_LENGTH,`,
+      `      webidl_napi_interface_${ifname}_constructor,`,
       `      nullptr,`,
+      ...((propCount > 0) ? [
+        `      sizeof(props) / sizeof(*props),`,
+        `      props,`,
+      ] : [
+        `      0,`,
+        `      nullptr,`,
+      ]),
+      `      &ctor));`,
+      ``,
+      `  STATUS_CALL(WebIdlNapi::InstanceData::GetCurrent(env, &idata));`,
+      `  STATUS_CALL(idata->AddConstructor(env, "${ifname}", ctor));`,
+      ``,
+      `  *result = ctor;`,
     ]),
-    `      &ctor));`,
-    ``,
-    `  STATUS_CALL(napi_create_reference(env, ctor, 1, &ctor_ref));`,
-    ``,
-    `  idata->AddConstructor("${ifname}", ctor_ref);`,
-    `  *result = ctor;`,
     `  return napi_ok;`,
     `}`
   ].join('\n');
@@ -649,7 +695,7 @@ function generateIfaceConverters(ifaceName) {
   ].join('\n');
 }
 
-function generateIface(iface) {
+function generateIface(iface, pollute) {
   // Convert the list of operations to an object where a key is the name of
   // the operation and its value is an array of signatures the operation might
   // have.
@@ -682,20 +728,40 @@ function generateIface(iface) {
       `//////////////////////////////////////////////////////////////////////` +
         `//////////`
     ].join('\n'),
+    // Do not generate converters and a constructor for exposed partial
+    // interfaces when we're generating code that pollutes the global namespace.
+    ...(!(pollute && isExposedPartial(iface)) ? [
+      generateIfaceConverters(iface.name),
+      generateIfaceOperation(iface.name, 'constructor', collapsedCtors,
+        sameObjAttrs.length)
+    ] : []),
     // Object.entries() turns the operations as collapsed by name back into an
     // array of [opname, sigs] tuples, each of which we pass to
     // `generateIfaceOperation`. That way, only one binding is generated for all
     // signatures of an operation.
-    generateIfaceConverters(iface.name),
-    generateIfaceOperation(iface.name, 'constructor', collapsedCtors,
-      sameObjAttrs.length),
     ...Object.entries(collapsedOps).map(([opname, sigs]) =>
       generateIfaceOperation(iface.name, opname, sigs)),
-    generateIfaceInit(iface.name, collapsedOps, attrs, sameObjAttrs)
+    generateIfaceInit(iface, collapsedOps, attrs, sameObjAttrs, pollute)
   ].join('\n\n');
 }
 
-function generateInit(interfaces, moduleName) {
+function generateExposureList(rhs, indent, extras) {
+  return generateInitializerList(
+    (rhs.type === 'identifier' ? [ `"${rhs.value}"` ] :
+    rhs.type === 'identifier-list' ? rhs.value.map(({value}) => `"${value}"`) :
+    []).concat(extras ? extras : []), indent);
+}
+
+function generateInit(interfaces, moduleName, pollute) {
+  const { exposedPartials, fulls } = interfaces
+    .reduce((soFar, item) => {
+      if (pollute && isExposedPartial(item)) {
+        soFar.exposedPartials.push(item);
+      } else {
+        soFar.fulls.push(item);
+      }
+      return soFar;
+    }, { exposedPartials: [], fulls: [] });
   return [
     `/////////////////////////////////////////////////////////////////////////` +
       `///////`,
@@ -708,7 +774,7 @@ function generateInit(interfaces, moduleName) {
     `    napi_env env) {`,
     // Create an array of property descriptors for each interface.
     `  napi_property_descriptor props[] =`,
-    generateInitializerList(interfaces.map((item) => [
+    generateInitializerList(fulls.map((item) => [
       `"${item.name}"`,
       `nullptr`,
       `nullptr`,
@@ -720,7 +786,7 @@ function generateInit(interfaces, moduleName) {
     ]), '  ') + ';',
     ``,
     // Initialize the `value` field of each property descriptor.
-    ...interfaces.reduce((soFar, item, idx) => soFar.concat([
+    ...fulls.reduce((soFar, item, idx) => soFar.concat([
       `  NAPI_CALL(`,
       `      env,`,
       `      webidl_napi_create_interface_${item.name}(`,
@@ -728,6 +794,41 @@ function generateInit(interfaces, moduleName) {
       `          &(props[${idx}].value)));`
     ]), []),
     ``,
+    // If instructed to generate code that pollutes the global namespace, add
+    // such code here.
+    ...(pollute
+      ? ([
+        fulls.map((item, idx) => {
+        const exposed = item.extAttrs.filter(({name}) => (name === 'Exposed'));
+        return ((!item.partial && exposed.length > 0)
+          ? [
+            `  NAPI_CALL(`,
+            `      env,`,
+            `      WebIdlNapi::ExposeInterface(`,
+            `          env,`,
+            `          1,`,
+            `          &props[${idx}],`,
+            // We assume there is only one extended attribute named `"Exposed"`
+            // in the list of extended attributes, so it's safe to use the first
+            // (and only) one.
+            `${generateExposureList(exposed[0].rhs, '          ')}));`,
+          ] : []);
+        }).flat(),
+        ``,
+        exposedPartials.map((item, idx) => {
+          const exposed = item.extAttrs.filter(({name}) => (name === 'Exposed'));
+          return ((exposed.length > 0)
+            ? [
+              `  NAPI_CALL(`,
+              `      env,`,
+              `      webidl_napi_create_interface_${item.name}(`,
+              `          env,`,
+              `          nullptr));`
+            ] : []);
+        }).flat(),
+        ``,
+      ].flat())
+      : []),
     `  napi_value exports;`,
     `  NAPI_CALL(env, napi_create_object(env, &exports));`,
     `  NAPI_CALL(`,
@@ -808,14 +909,20 @@ const interfaces = Object.values(ifaces);
 fs.writeFileSync(outputFile, [
   [
     'webidl-napi.h',
-    // If the user requested extra includes, add them as `#include "extra-include.h"`.
-    // argv.i may be absent, may be a string, or it may be an array.
+    // If the user requested extra includes, add them as
+    // `#include "extra-include.h"`. argv.i may be absent, may be a string, or
+    // it may be an array.
     ...(argv.i ? (typeof argv.i === 'string' ? [ argv.i ] : argv.i) : [])
   ].map((item) => `#include "${item}"`).join('\n'),
-  ...[...enums, ...dictionaries, ...interfaces]
-    .map(generateForwardDeclaration),
+  ...[
+    ...enums,
+    ...dictionaries,
+    ...((!argv.x)
+      ? interfaces.filter((item) => !isExposedPartial(item))
+      : interfaces)
+  ].map(generateForwardDeclaration),
   ...enums.map(generateEnumMaps),
   ...dictionaries.map(generateDictionaryMaps),
-  ...interfaces.map(generateIface),
-  generateInit(interfaces, parsedPath.name)
+  ...interfaces.map((item) => generateIface(item, !argv.x)),
+  generateInit(interfaces, parsedPath.name, !argv.x)
 ].join('\n\n') + '\n');
