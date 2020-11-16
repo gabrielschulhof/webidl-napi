@@ -30,3 +30,9 @@ WebIdlNapi::Promise<GPUDevice> GPUAdapter::requestDevice(
   result.Resolve({});
   return result;
 }
+
+GPUDevice::GPUDevice():
+    extensions({
+      GPUExtensionName::Texture_compression_bc,
+      GPUExtensionName::Timestamp_query
+    }) {}

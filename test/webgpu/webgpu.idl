@@ -64,7 +64,22 @@ dictionary GPULimits {
     GPUSize32 maxUniformBufferBindingSize = 16384;
 };
 
-typedef [EnforceRange] unsigned long GPUSize32;
+[Exposed=(Window, DedicatedWorker), Serializable]
+interface GPUDevice : EventTarget {
+    [SameObject] readonly attribute GPUAdapter adapter;
+    readonly attribute FrozenArray<GPUExtensionName> extensions;
+    readonly attribute object limits;
 
-interface GPUDevice {
+    [SameObject] readonly attribute GPUQueue defaultQueue;
 };
+
+interface GPUCommandBuffer {
+    readonly attribute Promise<double> executionTime;
+};
+GPUCommandBuffer includes GPUObjectBase;
+
+interface GPUQueue {
+    undefined submit(sequence<GPUCommandBuffer> commandBuffers);
+};
+
+typedef [EnforceRange] unsigned long GPUSize32;

@@ -104,6 +104,9 @@ class Promise {
   static napi_status ToJS(napi_env env,
                           const Promise<T>& promise,
                           napi_value* val);
+  static napi_status ToNative(napi_env env,
+                              napi_value val,
+                              Promise<T>* result);
   void Resolve(const T& resolution);
   void Reject();
   void Conclude();

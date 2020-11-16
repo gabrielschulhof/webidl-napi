@@ -309,6 +309,14 @@ inline napi_status Promise<T>::ToJS(napi_env env,
   return napi_ok;
 }
 
+template <typename T>
+inline napi_status Promise<T>::ToNative(napi_env env,
+                                        napi_value val,
+                                        Promise<T>* result) {
+  // Cannot convert a JS promise to a native promise.
+  return napi_invalid_arg;
+}
+
 template <>
 template <typename T>
 inline napi_status Converter<Promise<T>>::ToJS(napi_env env,
@@ -322,7 +330,7 @@ template <typename T>
 inline napi_status Converter<Promise<T>>::ToNative(napi_env env,
                                                    napi_value val,
                                                    Promise<T>* result) {
-  return Promise<T>::ToJS(env, val, result);
+  return Promise<T>::ToNative(env, val, result);
 }
 
 template <typename T>

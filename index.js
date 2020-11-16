@@ -56,6 +56,13 @@ const typemapWebIDLBasicTypesToNAPI = {
   'object': { type: 'napi_object', converter: 'object' }
 };
 
+function isReturnType(retType) {
+  return (
+    retType &&
+    retType.type === 'return-type' &&
+    retType.idlType !== 'undefined');
+}
+
 function isExposedPartial(iface) {
   return (iface.partial &&
     iface.extAttrs.filter(({name}) => (name === 'Exposed')).length > 0);
@@ -415,8 +422,9 @@ function generateCall(ifname, sig, indent, sameObjAttrCount) {
     ...(sig.external != true ? [
       // If there's a return value or this is a constructor, assign it to a
       // variable.
-      (((sig.idlType && sig.idlType.type === 'return-type') ||
-          sig.type === 'constructor') ? 'ret = ' : '') +
+      ((isReturnType(sig.idlType) || sig.type === 'constructor')
+        ? 'ret = '
+        : '') +
         // If it's a static method, call via `ifname::methodname(...)`. Otherwise,
         // if it's a constructor, call via `new ifname(...)`. Finally, if it's an
         // instance method, call via `cc_rcv->methodname(...)`.
@@ -469,7 +477,7 @@ function generateIfaceOperation(ifname, opname, sigs, sameObjAttrCount) {
   const maxArgs =
     sigs.reduce((soFar, item) => Math.max(soFar, item.arguments.length), 0);
   const retType = sigs[0].idlType;
-  const hasReturn = (retType && retType.type === 'return-type');
+  const hasReturn = isReturnType(retType);
 
   return [
     `static napi_value`,

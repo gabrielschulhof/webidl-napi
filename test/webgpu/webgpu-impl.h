@@ -3,12 +3,11 @@
 
 #include "webidl-napi.h"
 
+struct GPUDevice;
+
 enum GPUPowerPreference {
   Low_power,
   High_performance
-};
-
-struct GPUDevice {
 };
 
 struct GPURequestAdapterOptions {
@@ -66,6 +65,24 @@ struct Navigator {
 
 struct WorkerNavigator {
   GPU gpu;
+};
+
+struct GPUCommandBuffer {
+  USVString label;
+  WebIdlNapi::Promise<double> executionTime;
+};
+
+struct GPUQueue {
+  void submit(WebIdlNapi::sequence<GPUCommandBuffer> commandBuffers);
+};
+
+struct GPUDevice {
+  GPUDevice();
+  GPUAdapter adapter;
+  WebIdlNapi::FrozenArray<GPUExtensionName> extensions;
+  object limits;
+
+  GPUQueue defaultQueue;
 };
 
 #endif  // WEBIDL_NAPI_TEST_WEBGPU_WEBGPU_IMPL_H
